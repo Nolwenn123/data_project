@@ -1,23 +1,27 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
 
-# Virtual env
+# Environnements
 .venv/
 venv/
+env/
+ENV/
+*.venv
 
-# Jupyter
-.ipynb_checkpoints/
-
-# Data
-data/raw/
-data/processed/
-
-# Models
-*.pkl
-
-# VS Code
+# IDE
+.idea/
 .vscode/
 
 # OS
 .DS_Store
+Thumbs.db
+
+# Tests / build
+.pytest_cache/
+.mypy_cache/
+.coverage
+dist/
+build/
+*.egg-info/
