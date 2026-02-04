@@ -25,3 +25,14 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Data
+*.csv
+data/raw/*.csv
+data/processed/*.csv
+
+# ML Models (fichiers volumineux)
+*.joblib
+*.pkl
+*.pickle
+*.h5
