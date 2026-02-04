@@ -160,9 +160,18 @@ def get_last_known_data(df_context):
     return None
 
 
-def generate_alerts(context: dict, predictions: dict):
-    """Genere les alertes basees sur le contexte et les predictions."""
+def generate_alerts(context: dict, predictions: dict, target_date):
+    """Genere les alertes basees sur le contexte, les predictions et la saisonnalite."""
     alerts = {"critical": [], "warning": [], "info": []}
+    
+    # Alertes saisonnieres
+    month = target_date.month
+    if month in [12, 1, 2]:  # Hiver
+        alerts["warning"].append("PERIODE HIVERNALE - Augmentation des pathologies respiratoires et de la grippe attendue")
+    elif month == 11:  # Novembre
+        alerts["info"].append("Debut de saison hivernale - Surveiller l'augmentation des cas de grippe")
+    elif month == 3:  # Mars
+        alerts["info"].append("Fin de saison hivernale - Pic possible de gastro-enterites")
     
     # Alertes occupation
     occupancy = context.get('beds_occupied', 1500) / 1800
@@ -337,9 +346,9 @@ if page == "Dashboard":
     with col1:
         horizon_type = st.radio(
             "Horizon de prediction",
-            ["Demain", "Apres-demain", "Choisir une date"],
+            ["Aujourd'hui", "Demain", "Apres-demain", "Choisir une date"],
             horizontal=True,
-            index=0
+            index=1
         )
     
     with col2:
@@ -352,7 +361,9 @@ if page == "Dashboard":
             )
             target_date = datetime.combine(selected_date, datetime.min.time())
         else:
-            if horizon_type == "Demain":
+            if horizon_type == "Aujourd'hui":
+                target_date = datetime.now()
+            elif horizon_type == "Demain":
                 target_date = datetime.now() + timedelta(days=1)
             else:  # Apres-demain
                 target_date = datetime.now() + timedelta(days=2)
@@ -387,12 +398,23 @@ if page == "Dashboard":
             "visits_avg_30days": 275
         }
     else:
+        # Estimation des niveaux epidemiques selon la saison
+        month = target_date.month
+        if month in [12, 1, 2]:  # Hiver = epidemies fortes
+            flu_level, bronchiolitis_level, covid_level = 4, 3, 2
+        elif month in [11, 3]:  # Transition = epidemies moderees
+            flu_level, bronchiolitis_level, covid_level = 2, 2, 1
+        elif month in [6, 7, 8]:  # Ete = epidemies faibles
+            flu_level, bronchiolitis_level, covid_level = 0, 0, 1
+        else:  # Printemps/Automne
+            flu_level, bronchiolitis_level, covid_level = 1, 1, 1
+        
         context = {
             "day_of_week": target_date.weekday(),
             "month": target_date.month,
             "is_weekend": 1 if target_date.weekday() >= 5 else 0,
             "is_winter": 1 if target_date.month in [11, 12, 1, 2, 3] else 0,
-            "flu_level": 1, "bronchiolitis_level": 1, "covid_level": 1,
+            "flu_level": flu_level, "bronchiolitis_level": bronchiolitis_level, "covid_level": covid_level,
             "heatwave": 0, "strike": 0, "mass_casualty_event": 0,
             "beds_occupied": 1500, "icu_beds_occupied": 80,
             "staff_doctors_available": 50, "staff_nurses_available": 120,
@@ -412,11 +434,15 @@ if page == "Dashboard":
     
     with col1:
         visits = predictions.get('visits', {}).get('visits_predicted', 280) if predictions else 280
-        st.metric("Patients prevus", visits, delta=f"{visits-280:+d}" if visits != 280 else None)
+        visits_baseline = context['visits_yesterday']
+        visits_delta = visits - visits_baseline
+        st.metric("Patients prevus", visits, delta=f"{visits_delta:+d} vs hier")
     
     with col2:
         beds = predictions.get('beds', {}).get('beds_predicted', context['beds_occupied']) if predictions else context['beds_occupied']
-        st.metric("Lits occupes", beds, delta=f"{beds-context['beds_occupied']:+d}" if beds != context['beds_occupied'] else None)
+        beds_baseline = context['beds_occupied']
+        beds_delta = beds - beds_baseline
+        st.metric("Lits occupes", beds, delta=f"{beds_delta:+d} vs actuel")
     
     with col3:
         occupancy = (beds / 1800) * 100
@@ -432,7 +458,7 @@ if page == "Dashboard":
     st.divider()
     
     # === ALERTES ===
-    alerts = generate_alerts(context, predictions)
+    alerts = generate_alerts(context, predictions, target_date)
     
     col1, col2 = st.columns([1, 1])
     
@@ -474,16 +500,58 @@ if page == "Dashboard":
     # === CONTEXTE EVENEMENTS ===
     st.markdown('<p class="sub-header">Evenements et Contexte</p>', unsafe_allow_html=True)
     
-    col1, col2, col3, col4 = st.columns(4)
+    # Calcul du score de risque basé sur la date
+    month = target_date.month
+    day_of_week = target_date.weekday()
+    
+    # Score saisonnier (0-40 points)
+    if month in [12, 1, 2]:  # Hiver
+        seasonal_score = 40
+    elif month in [11, 3]:  # Debut/fin hiver
+        seasonal_score = 25
+    elif month in [6, 7, 8]:  # Ete
+        seasonal_score = 10
+    else:
+        seasonal_score = 15
+    
+    # Score jour de la semaine (0-20 points) - lundi et weekend plus charges
+    if day_of_week == 0:  # Lundi
+        weekday_score = 20
+    elif day_of_week in [5, 6]:  # Weekend
+        weekday_score = 15
+    else:
+        weekday_score = 10
+    
+    # Score epidemique (0-40 points)
+    epidemic_score = context['flu_level'] + context['bronchiolitis_level'] + context['covid_level']
+    epidemic_risk = (epidemic_score / 15) * 40
+    
+    # Score total
+    risk_score = seasonal_score + weekday_score + epidemic_risk
+    
+    # Statut
+    if risk_score >= 70:
+        risk_status = "Eleve"
+        risk_color = "#ef4444"
+    elif risk_score >= 45:
+        risk_status = "Moyen"
+        risk_color = "#f59e0b"
+    else:
+        risk_status = "Faible"
+        risk_color = "#22c55e"
+    
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        epidemic_score = context['flu_level'] + context['bronchiolitis_level'] + context['covid_level']
-        st.metric("Score epidemique", f"{epidemic_score:.1f}/15")
+        st.metric("Score de risque", f"{risk_score:.0f}/100")
     with col2:
-        st.metric("Canicule", "Oui" if context['heatwave'] else "Non")
+        st.markdown(f"""
+            <div style="text-align: center; padding: 10px;">
+                <p style="margin: 0; font-size: 14px; color: #888;">Statut</p>
+                <p style="margin: 0; font-size: 24px; font-weight: bold; color: {risk_color};">{risk_status}</p>
+            </div>
+        """, unsafe_allow_html=True)
     with col3:
-        st.metric("Greve", "Oui" if context['strike'] else "Non")
-    with col4:
         st.metric("Evenement majeur", "Oui" if context['mass_casualty_event'] else "Non")
 
 
@@ -803,7 +871,7 @@ elif page == "Predictions":
                 st.warning("API non disponible pour la simulation")
             
             # Alertes du scénario
-            sim_alerts = generate_alerts(sim_context, {"visits": sim_visits, "beds": sim_beds_pred} if api_ok else {})
+            sim_alerts = generate_alerts(sim_context, {"visits": sim_visits, "beds": sim_beds_pred} if api_ok else {}, target_date)
             sim_recs = generate_recommendations(sim_context, {"visits": sim_visits, "beds": sim_beds_pred} if api_ok else {}, sim_alerts)
             
             col1, col2 = st.columns(2)
