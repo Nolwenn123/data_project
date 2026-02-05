@@ -12,6 +12,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 
+# === DATE DE RÉFÉRENCE ===
+# Date fixée pour les démonstrations (données disponibles jusqu'à cette date)
+TODAY = datetime(2026, 2, 5, 12, 0, 0)
+
 # === CONFIGURATION ===
 st.set_page_config(
     page_title="Urgences Pitié-Salpêtrière",
@@ -325,7 +329,7 @@ with st.sidebar:
         st.caption("```uvicorn back.main:app```")
     
     st.divider()
-    st.caption(f"{datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    st.caption(f"{TODAY.strftime('%d/%m/%Y %H:%M')}")
     st.caption("Pitié-Salpêtrière v2.0")
 
 
@@ -355,18 +359,18 @@ if page == "Dashboard":
         if horizon_type == "Choisir une date":
             selected_date = st.date_input(
                 "Selectionner une date",
-                value=datetime.now().date() + timedelta(days=1),
-                min_value=datetime.now().date(),
-                max_value=datetime.now().date() + timedelta(days=365)
+                value=TODAY.date() + timedelta(days=1),
+                min_value=TODAY.date(),
+                max_value=TODAY.date() + timedelta(days=365)
             )
             target_date = datetime.combine(selected_date, datetime.min.time())
         else:
             if horizon_type == "Aujourd'hui":
-                target_date = datetime.now()
+                target_date = TODAY
             elif horizon_type == "Demain":
-                target_date = datetime.now() + timedelta(days=1)
+                target_date = TODAY + timedelta(days=1)
             else:  # Apres-demain
-                target_date = datetime.now() + timedelta(days=2)
+                target_date = TODAY + timedelta(days=2)
     
     with col3:
         st.metric("Date cible", target_date.strftime("%d/%m/%Y"))
@@ -374,7 +378,7 @@ if page == "Dashboard":
     st.divider()
     
     # === PREPARATION CONTEXTE ===
-    today = datetime.now()
+    today = TODAY
     
     # Contexte basé sur les dernières données + ajustements
     if last_data:
@@ -423,9 +427,20 @@ if page == "Dashboard":
     
     # === PRÉDICTIONS ===
     predictions = {}
+    today_predictions = {}
+    
     if api_ok:
         predictions['visits'] = get_prediction("visits", context)
         predictions['beds'] = get_prediction("beds", context)
+        
+        # Prédictions pour aujourd'hui (baseline)
+        if target_date.date() != TODAY.date():
+            today_context = context.copy()
+            today_context['day_of_week'] = TODAY.weekday()
+            today_context['month'] = TODAY.month
+            today_context['is_weekend'] = 1 if TODAY.weekday() >= 5 else 0
+            today_predictions['visits'] = get_prediction("visits", today_context)
+            today_predictions['beds'] = get_prediction("beds", today_context)
     
     # === KPIs ===
     st.markdown('<p class="sub-header">Indicateurs cles</p>', unsafe_allow_html=True)
@@ -434,15 +449,29 @@ if page == "Dashboard":
     
     with col1:
         visits = predictions.get('visits', {}).get('visits_predicted', 280) if predictions else 280
-        visits_baseline = context['visits_yesterday']
-        visits_delta = visits - visits_baseline
-        st.metric("Patients prevus", visits, delta=f"{visits_delta:+d} vs hier")
+        # Baseline = données d'aujourd'hui ou prédiction d'aujourd'hui
+        if target_date.date() == TODAY.date():
+            visits_baseline = last_data['beds_occupied'] if last_data else 280
+            delta_label = ""
+            visits_delta = None
+        else:
+            visits_baseline = today_predictions.get('visits', {}).get('visits_predicted', 280) if today_predictions else 280
+            visits_delta = visits - visits_baseline
+            delta_label = f"{visits_delta:+d} vs aujourd'hui"
+        st.metric("Patients prevus", visits, delta=delta_label if visits_delta is not None else None)
     
     with col2:
         beds = predictions.get('beds', {}).get('beds_predicted', context['beds_occupied']) if predictions else context['beds_occupied']
-        beds_baseline = context['beds_occupied']
-        beds_delta = beds - beds_baseline
-        st.metric("Lits occupes", beds, delta=f"{beds_delta:+d} vs actuel")
+        # Baseline = données d'aujourd'hui ou prédiction d'aujourd'hui
+        if target_date.date() == TODAY.date():
+            beds_baseline = last_data['beds_occupied'] if last_data else 1500
+            delta_label = ""
+            beds_delta = None
+        else:
+            beds_baseline = today_predictions.get('beds', {}).get('beds_predicted', last_data['beds_occupied'] if last_data else 1500) if today_predictions else (last_data['beds_occupied'] if last_data else 1500)
+            beds_delta = beds - beds_baseline
+            delta_label = f"{beds_delta:+d} vs aujourd'hui"
+        st.metric("Lits occupes", beds, delta=delta_label if beds_delta is not None else None)
     
     with col3:
         occupancy = (beds / 1800) * 100
@@ -580,35 +609,20 @@ elif page == "Tendances":
     df['month_name'] = df['month'].map({1: 'Jan', 2: 'Fév', 3: 'Mar', 4: 'Avr', 5: 'Mai', 6: 'Juin',
                                          7: 'Juil', 8: 'Août', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Déc'})
     
-    tab1, tab2, tab3 = st.tabs(["Saisonnalite", "Heatmaps", "Impact evenements"])
+    tab1, tab2 = st.tabs(["Saisonnalite", "Heatmaps"])
     
     # === TAB 1: SAISONNALITE ===
     with tab1:
-        col1, col2 = st.columns(2)
+        st.subheader("Ete vs Hiver")
+        season_data = df.groupby('season')['beds_occupied'].mean().reindex(['Hiver', 'Printemps', 'Été', 'Automne'])
+        fig = px.bar(x=season_data.index, y=season_data.values,
+                    color=season_data.values, color_continuous_scale='RdYlBu_r',
+                    labels={'x': 'Saison', 'y': 'Lits occupés (moyenne)'})
+        fig.update_layout(height=350, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
         
-        with col1:
-            st.subheader("Ete vs Hiver")
-            season_data = df.groupby('season')['beds_occupied'].mean().reindex(['Hiver', 'Printemps', 'Été', 'Automne'])
-            fig = px.bar(x=season_data.index, y=season_data.values,
-                        color=season_data.values, color_continuous_scale='RdYlBu_r',
-                        labels={'x': 'Saison', 'y': 'Lits occupés (moyenne)'})
-            fig.update_layout(height=350, showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            delta = season_data['Hiver'] - season_data['Été']
-            st.info(f"**Ecart Hiver/Ete:** +{delta:.0f} lits en hiver (+{delta/season_data['Été']*100:.1f}%)")
-        
-        with col2:
-            st.subheader("Semaine vs Week-end")
-            df['type_jour'] = df['day_of_week'].apply(lambda x: 'Week-end' if x >= 5 else 'Semaine')
-            weekday_data = df.groupby('type_jour')['beds_occupied'].mean()
-            fig = px.pie(values=weekday_data.values, names=weekday_data.index,
-                        color_discrete_sequence=['#3b82f6', '#f59e0b'])
-            fig.update_layout(height=350)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            delta = weekday_data['Semaine'] - weekday_data['Week-end']
-            st.info(f"**Ecart:** +{delta:.0f} lits en semaine vs week-end")
+        delta = season_data['Hiver'] - season_data['Été']
+        st.info(f"**Ecart Hiver/Ete:** +{delta:.0f} lits en hiver (+{delta/season_data['Été']*100:.1f}%)")
         
         # Evolution mensuelle
         st.subheader("Evolution mensuelle")
@@ -664,43 +678,6 @@ elif page == "Tendances":
                            labels=dict(x="Jour", y="Heure", color="Attente (min)"))
             fig.update_layout(height=500)
             st.plotly_chart(fig, use_container_width=True)
-    
-    # === TAB 3: IMPACT EVENEMENTS ===
-    with tab3:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Impact Canicule")
-            if 'heatwave' in df.columns:
-                heatwave_impact = df.groupby('heatwave')['beds_occupied'].mean()
-                fig = px.bar(x=['Normal', 'Canicule'], y=heatwave_impact.values,
-                            color=['Normal', 'Canicule'], color_discrete_sequence=['#3b82f6', '#ef4444'])
-                fig.update_layout(height=300, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                if len(heatwave_impact) > 1:
-                    delta = heatwave_impact[1] - heatwave_impact[0]
-                    st.metric("Impact canicule", f"+{delta:.0f} lits", delta=f"+{delta/heatwave_impact[0]*100:.1f}%")
-        
-        with col2:
-            st.subheader("Impact Greve")
-            if 'strike' in df.columns:
-                strike_impact = df.groupby('strike')['beds_occupied'].mean()
-                fig = px.bar(x=['Normal', 'Grève'], y=strike_impact.values,
-                            color=['Normal', 'Grève'], color_discrete_sequence=['#3b82f6', '#f59e0b'])
-                fig.update_layout(height=300, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                if len(strike_impact) > 1:
-                    delta = strike_impact[1] - strike_impact[0]
-                    st.metric("Impact grève", f"+{delta:.0f} lits", delta=f"+{delta/strike_impact[0]*100:.1f}%")
-        
-        st.subheader("Correlation Epidemies - Occupation")
-        fig = px.scatter(df, x='flu_level', y='beds_occupied', trendline='ols',
-                        color='season', title="Grippe vs Occupation",
-                        labels={'flu_level': 'Niveau grippe', 'beds_occupied': 'Lits occupés'})
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
 
 
 # ============================================================
@@ -723,7 +700,7 @@ elif page == "Predictions":
         predictions_list = []
         
         for h in horizons:
-            target_date = datetime.now() + timedelta(days=h)
+            target_date = TODAY + timedelta(days=h)
             ctx = {
                 "day_of_week": target_date.weekday(),
                 "month": target_date.month,
